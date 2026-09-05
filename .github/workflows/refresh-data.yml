@@ -1,0 +1,41 @@
+name: Refresh activity data
+
+on:
+  schedule:
+    # 每天 10:20（香港時間）＝ 02:20 UTC
+    - cron: "20 2 * * *"
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+concurrency:
+  group: refresh-data
+  cancel-in-progress: false
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Download & compact activity data
+        run: python3 build.py
+
+      - name: Commit & push changes
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          if git diff --quiet -- data/ && git diff --cached --quiet -- data/; then
+            echo "No data change, skip commit."
+          else
+            git add data/
+            git commit -m "chore(data): refresh SmartPLAY activity data"
+            git push
+          fi
