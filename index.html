@@ -39,7 +39,9 @@
   .row{display:grid;gap:10px}
   @media(min-width:640px){.row{grid-template-columns:1fr 1fr}}
   @media(min-width:900px){.row{grid-template-columns:repeat(4,1fr)}}
-  select,input[type=text],input[type=search],input[type=date],input[type=time]{
+  .kw-box{grid-column:1/-1}
+  @media(min-width:640px){.kw-box{grid-column:span 2}}
+  select,input[type=text],input[type=search],input[type=date],input[type=time],input[type=number]{
     width:100%;padding:9px 11px;border:1px solid var(--line);border-radius:9px;font-size:14px;background:#fff;color:var(--ink);font-family:inherit
   }
   select:focus,input:focus{outline:2px solid var(--brand-soft);border-color:var(--brand)}
@@ -136,6 +138,22 @@
       </select>
     </div>
     <div class="fgroup">
+      <div class="flabel">報名方式</div>
+      <select id="enrolSel">
+        <option value="">全部方式</option>
+        <option value="BALLOT">抽籤</option>
+        <option value="FCFS">先到先得</option>
+        <option value="WALKIN">即場報名</option>
+      </select>
+    </div>
+    <div class="fgroup">
+      <div class="flabel">適合年齡</div>
+      <input type="number" id="ageIn" min="0" max="199" placeholder="例如 30">
+    </div>
+  </div>
+
+  <div class="row">
+    <div class="fgroup">
       <div class="flabel">日期範圍（開始）</div>
       <input type="date" id="dateFrom">
     </div>
@@ -143,10 +161,7 @@
       <div class="flabel">日期範圍（結束）</div>
       <input type="date" id="dateTo">
     </div>
-  </div>
-
-  <div class="row" style="grid-template-columns:1fr">
-    <div class="fgroup" style="margin-bottom:0">
+    <div class="fgroup kw-box">
       <div class="flabel">關鍵字（活動名稱／場地／編號）</div>
       <input type="search" id="kw" placeholder="例如：羽毛球、沙田、ST260013HES…">
     </div>
@@ -154,15 +169,24 @@
 
   <div class="fgroup" style="margin-top:12px">
     <div class="chips">
-      <label class="switch"><input type="checkbox" id="chkAvail"> 只顯示尚有名額</label>
+      <label class="switch checked"><input type="checkbox" id="chkAvail" checked> 只顯示尚有名額</label>
       <label class="switch"><input type="checkbox" id="chkFree"> 只顯示免費</label>
+      <label class="switch checked"><input type="checkbox" id="chkHideEnded" checked> 隱藏已結束課程</label>
     </div>
   </div>
 </div>
 
 <div class="toolbar">
   <div class="count" id="count"></div>
-  <div class="count">排序：開始日期 ↑</div>
+  <div class="count">排序：
+    <select id="sortSel" style="width:auto;padding:5px 8px;font-size:13.5px">
+      <option value="start" selected>開始日期</option>
+      <option value="left-desc">尚餘名額（多→少）</option>
+      <option value="left-asc">尚餘名額（少→多）</option>
+      <option value="fee-asc">費用（低→高）</option>
+      <option value="fee-desc">費用（高→低）</option>
+    </select>
+  </div>
 </div>
 
 <div id="results"><div id="loading"><div class="spinner"></div>載入活動資料中…</div></div>
@@ -177,8 +201,9 @@
 let ALL = [];
 const state = {
   modeWeekend: true, modeEvening: true, evening: "18:00",
-  districts: new Set(), type: "", target: "all",
-  dateFrom: "", dateTo: "", kw: "", onlyAvail: false, onlyFree: false
+  districts: new Set(), type: "", target: "all", enrol: "", age: "",
+  dateFrom: "", dateTo: "", kw: "", onlyAvail: true, onlyFree: false,
+  hideEnded: true, sort: "start", today: ""
 };
 let shown = 0;
 const PAGE = 120;
@@ -227,22 +252,40 @@ function matchesTarget(r){
 function filterAll(){
   const out = [];
   const q = state.kw.trim().toLowerCase();
+  const ageNum = (state.age === "" || state.age == null) ? NaN : parseInt(state.age, 10);
   for(const r of ALL){
     const d = parseDays(r);
     if(!matchesDayTime(r, d)) continue;
     if(state.districts.size && !state.districts.has(r.TC_DISTRICT)) continue;
     if(state.type && r.TC_ACT_TYPE_NAME !== state.type) continue;
+    if(state.enrol && r.ENROL_METHOD !== state.enrol) continue;
     if(!matchesDate(r)) continue;
     if(!matchesTarget(r)) continue;
+    if(state.hideEnded && r.PGM_END_DATE && state.today && r.PGM_END_DATE < state.today) continue;
     if(state.onlyAvail && !(r.PLACES_LEFT > 0)) continue;
     if(state.onlyFree && (r.FEE == null || r.FEE > 0)) continue;
+    if(!isNaN(ageNum)){
+      if(r.MIN_AGE != null && ageNum < r.MIN_AGE) continue;
+      if(r.MAX_AGE != null && ageNum > r.MAX_AGE) continue;
+    }
     if(q){
       const hay = ((r.TC_PGM_NAME||"")+" "+(r.EN_PGM_NAME||"")+" "+(r.TC_VENUE||"")+" "+(r.EN_VENUE||"")+" "+(r.ACTIVITY_NO||"")).toLowerCase();
       if(!hay.includes(q)) continue;
     }
     out.push(r);
   }
-  out.sort((a,b)=> (a.PGM_START_DATE||"").localeCompare(b.PGM_START_DATE||"") || (a.PGM_START_TIME||"").localeCompare(b.PGM_START_TIME||""));
+  const s = state.sort;
+  out.sort((a,b)=>{
+    const la = a.PLACES_LEFT == null ? -1 : a.PLACES_LEFT;
+    const lb = b.PLACES_LEFT == null ? -1 : b.PLACES_LEFT;
+    const fa = a.FEE == null ? 0 : a.FEE;
+    const fb = b.FEE == null ? 0 : b.FEE;
+    if(s === "left-desc") return lb - la;
+    if(s === "left-asc") return la - lb;
+    if(s === "fee-asc") return fa - fb;
+    if(s === "fee-desc") return fb - fa;
+    return (a.PGM_START_DATE||"").localeCompare(b.PGM_START_DATE||"") || (a.PGM_START_TIME||"").localeCompare(b.PGM_START_TIME||"");
+  });
   return out;
 }
 
@@ -378,16 +421,19 @@ function bind(){
   $("districtClear").onclick = ()=>{ state.districts.clear(); document.querySelectorAll("#districtChips .chip").forEach(x=>x.classList.remove("on")); render(false); };
   $("typeSel").onchange = e=>{ state.type = e.target.value; render(false); };
   $("targetSel").onchange = e=>{ state.target = e.target.value; render(false); };
+  $("enrolSel").onchange = e=>{ state.enrol = e.target.value; render(false); };
+  $("ageIn").oninput = debounce(e=>{ state.age = e.target.value; render(false); }, 200);
   $("dateFrom").onchange = e=>{ state.dateFrom = e.target.value; render(false); };
   $("dateTo").onchange = e=>{ state.dateTo = e.target.value; render(false); };
   $("kw").oninput = debounce(e=>{ state.kw = e.target.value; render(false); }, 200);
-  $("chkAvail").onchange = e=>{ state.onlyAvail = e.target.checked; render(false); };
-  $("chkFree").onchange = e=>{ state.onlyFree = e.target.checked; render(false); };
-  // default date from = today
+  $("chkAvail").onchange = e=>{ state.onlyAvail = e.target.checked; e.target.closest(".switch").classList.toggle("checked", e.target.checked); render(false); };
+  $("chkFree").onchange = e=>{ state.onlyFree = e.target.checked; e.target.closest(".switch").classList.toggle("checked", e.target.checked); render(false); };
+  $("chkHideEnded").onchange = e=>{ state.hideEnded = e.target.checked; e.target.closest(".switch").classList.toggle("checked", e.target.checked); render(false); };
+  $("sortSel").onchange = e=>{ state.sort = e.target.value; render(false); };
+  // 記錄「今天」，供「隱藏已結束課程」判斷（日期範圍篩選留空，由使用者自選）
   const today = new Date();
   const pad = n => String(n).padStart(2,"0");
-  $("dateFrom").value = `${today.getFullYear()}-${pad(today.getMonth()+1)}-${pad(today.getDate())}`;
-  state.dateFrom = $("dateFrom").value;
+  state.today = `${today.getFullYear()}-${pad(today.getMonth()+1)}-${pad(today.getDate())}`;
 }
 
 bind();
